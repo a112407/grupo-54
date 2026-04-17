@@ -1,6 +1,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -9,10 +10,12 @@
 #define RUNNER_PIPE_FMT  "tmp/runner_%d.pipe"
 #define LOG_FILE         "tmp/history.log"
 
-#define MAX_CMD_LEN   1024
-#define MAX_ARGS      64
-#define MAX_USER_LEN  64
-#define MAX_QUERY_BUF 4096
+#define MAX_CMD_LEN      1024
+#define MAX_ARGS         64
+#define MAX_USER_LEN     64
+#define MAX_QUERY_BUF    8192
+#define MAX_QUEUE        1024
+#define DEFAULT_PARALLEL 1
 
 typedef enum {
     MSG_SUBMIT = 1,

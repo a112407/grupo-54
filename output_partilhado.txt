@@ -1,0 +1,11 @@
+Comando submetido
+Comando em execucao
+bin
+include
+Makefile
+obj
+output_partilhado.txt
+README.md
+src
+tmp
+Comando terminado
