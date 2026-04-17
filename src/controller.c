@@ -19,7 +19,9 @@ typedef struct {
 
 CmdEntry queue[MAX_QUEUE];  
 int queue_size = 0;         
-int running = 0;            
+int running = 0;
+int shutdown_pending = 0;    
+pid_t shutdown_runner = 0;            
 
 void send_response(pid_t runner_pid, Response *resp) {
     char path[128];
@@ -30,6 +32,25 @@ void send_response(pid_t runner_pid, Response *resp) {
     if (fd < 0) return;  
     
     write(fd, resp, sizeof(Response));
+    close(fd);
+}
+
+void write_log(CmdEntry *entry) {
+    int fd = open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) return;
+
+    struct timeval now;
+    gettimeofday(&now, NULL);
+
+    long elapsed = (now.tv_sec  - entry->submit_time.tv_sec)  * 1000
+                 + (now.tv_usec - entry->submit_time.tv_usec) / 1000;
+
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+        "user=%s cmd_id=%d elapsed_ms=%ld cmd=%s\n",
+        entry->user_id, entry->cmd_id, elapsed, entry->cmd);
+
+    write(fd, buf, len);
     close(fd);
 }
 
@@ -68,7 +89,7 @@ int main(int argc, char *argv[]) {
 
         switch (msg.type) {
 
-            case MSG_SUBMIT:
+            case MSG_SUBMIT: {
                 if (queue_size < MAX_QUEUE) {
                     queue[queue_size].cmd_id      = msg.cmd_id;
                     queue[queue_size].runner_pid  = msg.runner_pid;
@@ -91,15 +112,96 @@ int main(int argc, char *argv[]) {
                     queue_size++;
                 }
                 break;
+            }    
+            
+            case MSG_DONE: {
+                int i;
+                for (i = 0; i < queue_size; i++) {
+                    if (queue[i].cmd_id == msg.cmd_id) break;
+                }
 
-            case MSG_DONE:
-                break;
+                if (i < queue_size) {
+                    write_log(&queue[i]);
+                    queue[i] = queue[queue_size - 1];
+                    queue_size--;
+                    running--;
 
-            case MSG_QUERY:  
-                break;
+                    for (int j = 0; j < queue_size; j++) {
+                        if (queue[j].state == 0) {
+                            queue[j].state = 1;
+                            running++;
 
-            case MSG_SHUTDOWN:  
+                            Response resp;
+                            memset(&resp, 0, sizeof(resp));
+                            resp.type   = RESP_GO;
+                            resp.cmd_id = queue[j].cmd_id;
+                            send_response(queue[j].runner_pid, &resp);
+                            break;
+                        }
+                    }
+                }
+
+                if (shutdown_pending && running == 0 && queue_size == 0) {
+                    Response resp;
+                    memset(&resp, 0, sizeof(resp));
+                    resp.type = RESP_SHUTDOWN_ACK;
+                    send_response(shutdown_runner, &resp);
+
+                    close(pipe_fd);
+                    unlink(CONTROLLER_PIPE);
+                    exit(0);
+                }
                 break;
+            }    
+
+            case MSG_QUERY: {
+                Response resp;
+                memset(&resp, 0, sizeof(resp));
+                resp.type = RESP_QUERY;
+
+                int offset = 0;
+
+                offset += snprintf(resp.body + offset, sizeof(resp.body) - offset,
+                    "---\nExecuting\n");
+
+                for (int i = 0; i < queue_size; i++) {
+                    if (queue[i].state == 1) {
+                        offset += snprintf(resp.body + offset, sizeof(resp.body) - offset,
+                            "user-id %s - command-id %d\n",
+                            queue[i].user_id, queue[i].cmd_id);
+                    }
+                }
+
+                offset += snprintf(resp.body + offset, sizeof(resp.body) - offset,
+                    "---\nScheduled\n");
+
+                for (int i = 0; i < queue_size; i++) {
+                    if (queue[i].state == 0) {
+                        offset += snprintf(resp.body + offset, sizeof(resp.body) - offset,
+                            "user-id %s - command-id %d\n",
+                            queue[i].user_id, queue[i].cmd_id);
+                    }
+                }
+                send_response(msg.runner_pid, &resp);
+                break;
+            }
+
+            case MSG_SHUTDOWN: {
+                shutdown_pending = 1;
+                shutdown_runner  = msg.runner_pid;
+
+                if (running == 0 && queue_size == 0) {
+                    Response resp;
+                    memset(&resp, 0, sizeof(resp));
+                    resp.type = RESP_SHUTDOWN_ACK;
+                    send_response(shutdown_runner, &resp);
+
+                    close(pipe_fd);
+                    unlink(CONTROLLER_PIPE);
+                    exit(0);
+                }
+                break;
+            }
         }
     }
 
