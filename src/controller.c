@@ -152,16 +152,34 @@ static int remove_index(int index) {
 static void try_dispatch(void) {
     for (int i = 0; i < queue_size && running < max_parallel; ++i) {
         if (queue[i].state == STATE_WAITING) {
-            queue[i].state = STATE_RUNNING;
-            running++;
-
             Response resp;
             memset(&resp, 0, sizeof(resp));
             resp.type = RESP_GO;
             resp.cmd_id = queue[i].cmd_id;
-            send_response(queue[i].runner_pid, &resp);
+
+            if (send_response(queue[i].runner_pid, &resp) == 0) {
+                queue[i].state = STATE_RUNNING;
+                running++;
+            }
         }
     }
+}
+
+static void handle_submit(const Message *msg) {
+    if (queue_size >= MAX_QUEUE) {
+        return;
+    }
+
+    queue[queue_size].cmd_id = msg->cmd_id;
+    queue[queue_size].runner_pid = msg->runner_pid;
+    queue[queue_size].submit_time = msg->submit_time;
+    queue[queue_size].state = STATE_WAITING;
+
+    strncpy(queue[queue_size].user_id, msg->user_id, MAX_USER_LEN - 1);
+    queue[queue_size].user_id[MAX_USER_LEN - 1] = '\0';
+    strncpy(queue[queue_size].cmd, msg->cmd, MAX_CMD_LEN - 1);
+    queue[queue_size].cmd[MAX_CMD_LEN - 1] = '\0';
+    queue_size++;
 }
 
 static void handle_done(const Message *msg) {
@@ -239,6 +257,17 @@ static void handle_query(pid_t runner_pid) {
     send_response(runner_pid, &resp);
 }
 
+static void handle_shutdown(const Message *msg) {
+    shutdown_requested = 1;
+
+    Response resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.type = RESP_SHUTDOWN_ACK;
+    resp.cmd_id = msg->cmd_id;
+    snprintf(resp.body, sizeof(resp.body), "shutdown requested");
+    send_response(msg->runner_pid, &resp);
+}
+
 int main(int argc, char *argv[]) {
     if (argc >= 2) {
         max_parallel = atoi(argv[1]);
@@ -269,31 +298,13 @@ int main(int argc, char *argv[]) {
         }
 
         if (msg.type == MSG_SUBMIT) {
-            if (queue_size < MAX_QUEUE) {
-                queue[queue_size].cmd_id = msg.cmd_id;
-                queue[queue_size].runner_pid = msg.runner_pid;
-                queue[queue_size].submit_time = msg.submit_time;
-                queue[queue_size].state = STATE_WAITING;
-
-                strncpy(queue[queue_size].user_id, msg.user_id, MAX_USER_LEN - 1);
-                queue[queue_size].user_id[MAX_USER_LEN - 1] = '\0';
-                strncpy(queue[queue_size].cmd, msg.cmd, MAX_CMD_LEN - 1);
-                queue[queue_size].cmd[MAX_CMD_LEN - 1] = '\0';
-                queue_size++;
-            }
+            handle_submit(&msg);
         } else if (msg.type == MSG_DONE) {
             handle_done(&msg);
         } else if (msg.type == MSG_QUERY) {
             handle_query(msg.runner_pid);
         } else if (msg.type == MSG_SHUTDOWN) {
-            shutdown_requested = 1;
-
-            Response resp;
-            memset(&resp, 0, sizeof(resp));
-            resp.type = RESP_SHUTDOWN_ACK;
-            resp.cmd_id = msg.cmd_id;
-            snprintf(resp.body, sizeof(resp.body), "shutdown requested");
-            send_response(msg.runner_pid, &resp);
+            handle_shutdown(&msg);
         }
 
         try_dispatch();
@@ -309,7 +320,5 @@ int main(int argc, char *argv[]) {
 }
 
 
-
-
-// Coisa que faltam fazer: a primeira parte dos valores esta mais ou menos feita(quem quiser pode tentar melhorar), 
-//começar a desenvolver o indentificador de politicas de escalonamneto para o controller, e depois implementar as politicas de escalonamento.
+//A primeira parte dos 12 valores esta quase feita (quem quiser que reveja ou melhore)
+//Agora convinha fazer o identificador de poitica de escalonamneto no controller como pede à frente 
