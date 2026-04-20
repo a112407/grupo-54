@@ -27,6 +27,9 @@ static int queue_size = 0;
 static int running = 0;
 static int max_parallel = DEFAULT_PARALLEL;
 static int shutdown_requested = 0;
+static pid_t shutdown_runner_pid = 0;
+static char sched_policy[32] = "fifo";
+static char last_user[MAX_USER_LEN] = "";
 
 static void write_str(int fd, const char *s) {
     write(fd, s, strlen(s));
@@ -150,17 +153,50 @@ static int remove_index(int index) {
 }
 
 static void try_dispatch(void) {
-    for (int i = 0; i < queue_size && running < max_parallel; ++i) {
-        if (queue[i].state == STATE_WAITING) {
-            Response resp;
-            memset(&resp, 0, sizeof(resp));
-            resp.type = RESP_GO;
-            resp.cmd_id = queue[i].cmd_id;
+    while (running < max_parallel) {
+        int chosen = -1;
 
-            if (send_response(queue[i].runner_pid, &resp) == 0) {
-                queue[i].state = STATE_RUNNING;
-                running++;
+        if (strcmp(sched_policy, "rr") == 0) {
+            for (int i = 0; i < queue_size; ++i) {
+                if (queue[i].state == STATE_WAITING &&
+                    strcmp(queue[i].user_id, last_user) != 0) {
+                    chosen = i;
+                    break;
+                }
             }
+            if (chosen == -1) {
+                for (int i = 0; i < queue_size; ++i) {
+                    if (queue[i].state == STATE_WAITING) {
+                        chosen = i;
+                        break;
+                    }
+                }
+            }
+        } else {
+            for (int i = 0; i < queue_size; ++i) {
+                if (queue[i].state == STATE_WAITING) {
+                    chosen = i;
+                    break;
+                }
+            }
+        }
+
+        if (chosen == -1) break;
+
+        Response resp;
+        memset(&resp, 0, sizeof(resp));
+        resp.type = RESP_GO;
+        resp.cmd_id = queue[chosen].cmd_id;
+
+        if (send_response(queue[chosen].runner_pid, &resp) == 0) {
+            queue[chosen].state = STATE_RUNNING;
+            running++;
+
+            /* guardar o último utilizador (para o RR) */
+            strncpy(last_user, queue[chosen].user_id, MAX_USER_LEN - 1);
+            last_user[MAX_USER_LEN - 1] = '\0';
+        } else {
+            break;   
         }
     }
 }
@@ -204,54 +240,34 @@ static void handle_query(pid_t runner_pid) {
     resp.type = RESP_QUERY;
 
     size_t used = 0;
-    int n = snprintf(resp.body, sizeof(resp.body), "RUNNING:\n");
-    if (n < 0) {
-        return;
-    }
-    used = (size_t)n;
+    int n;
 
-    int have_running = 0;
+    n = snprintf(resp.body + used, sizeof(resp.body) - used, "---\nExecuting\n");
+    if (n > 0) used += (size_t)n;
+
     for (int i = 0; i < queue_size; ++i) {
         if (queue[i].state == STATE_RUNNING) {
-            have_running = 1;
-            n = snprintf(resp.body + used, sizeof(resp.body) - used, "cmd_id=%d user=%s\n", queue[i].cmd_id, queue[i].user_id);
-            if (n < 0 || (size_t)n >= sizeof(resp.body) - used) {
-                used = sizeof(resp.body) - 1;
-                break;
-            }
-            used += (size_t)n;
-        }
-    }
-
-    if (!have_running && used < sizeof(resp.body)) {
-        n = snprintf(resp.body + used, sizeof(resp.body) - used, "(none)\n");
-        if (n > 0) {
+            n = snprintf(resp.body + used, sizeof(resp.body) - used,
+                "user-id %s - command-id %d\n",
+                queue[i].user_id, queue[i].cmd_id);
+            if (n < 0 || (size_t)n >= sizeof(resp.body) - used) break;
             used += (size_t)n;
         }
     }
 
     if (used < sizeof(resp.body)) {
-        n = snprintf(resp.body + used, sizeof(resp.body) - used, "WAITING:\n");
-        if (n > 0) {
-            used += (size_t)n;
-        }
+        n = snprintf(resp.body + used, sizeof(resp.body) - used, "---\nScheduled\n");
+        if (n > 0) used += (size_t)n;
     }
 
-    int have_waiting = 0;
     for (int i = 0; i < queue_size; ++i) {
         if (queue[i].state == STATE_WAITING) {
-            have_waiting = 1;
-            n = snprintf(resp.body + used, sizeof(resp.body) - used, "cmd_id=%d user=%s\n", queue[i].cmd_id, queue[i].user_id);
-            if (n < 0 || (size_t)n >= sizeof(resp.body) - used) {
-                used = sizeof(resp.body) - 1;
-                break;
-            }
+            n = snprintf(resp.body + used, sizeof(resp.body) - used,
+                "user-id %s - command-id %d\n",
+                queue[i].user_id, queue[i].cmd_id);
+            if (n < 0 || (size_t)n >= sizeof(resp.body) - used) break;
             used += (size_t)n;
         }
-    }
-
-    if (!have_waiting && used < sizeof(resp.body)) {
-        snprintf(resp.body + used, sizeof(resp.body) - used, "(none)\n");
     }
 
     send_response(runner_pid, &resp);
@@ -259,13 +275,8 @@ static void handle_query(pid_t runner_pid) {
 
 static void handle_shutdown(const Message *msg) {
     shutdown_requested = 1;
-
-    Response resp;
-    memset(&resp, 0, sizeof(resp));
-    resp.type = RESP_SHUTDOWN_ACK;
-    resp.cmd_id = msg->cmd_id;
-    snprintf(resp.body, sizeof(resp.body), "shutdown requested");
-    send_response(msg->runner_pid, &resp);
+    shutdown_runner_pid = msg->runner_pid;
+    /* o ACK vai ser enviado só quando tudo terminar */
 }
 
 int main(int argc, char *argv[]) {
@@ -274,6 +285,11 @@ int main(int argc, char *argv[]) {
         if (max_parallel <= 0) {
             max_parallel = DEFAULT_PARALLEL;
         }
+    }
+
+    if (argc >= 3) {
+        strncpy(sched_policy, argv[2], sizeof(sched_policy) - 1);
+        sched_policy[sizeof(sched_policy) - 1] = '\0';
     }
 
     mkdir("tmp", 0755);
@@ -310,6 +326,12 @@ int main(int argc, char *argv[]) {
         try_dispatch();
 
         if (shutdown_requested && queue_size == 0 && running == 0) {
+            if (shutdown_runner_pid > 0) {
+                Response resp;
+                memset (&resp, 0, sizeof(resp));
+                resp.type = RESP_SHUTDOWN_ACK;
+                send_response(shutdown_runner_pid, &resp);
+            }
             break;
         }
     }

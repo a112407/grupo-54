@@ -106,6 +106,19 @@ static void build_cmd_string(int argc, char *argv[], int from, char *dst, size_t
 	}
 }
 
+/* separa a string cmd em argumentos, preenche args[] e devolve quantos */
+static int parse_command(char *cmd, char *args[], int max_args) {
+    int count = 0;
+    char *token = strtok(cmd, " \t");
+
+    while (token != NULL && count < max_args - 1) {
+        args[count++] = token;
+        token = strtok(NULL, " \t");
+    }
+    args[count] = NULL;   /* execvp exige que o último seja NULL */
+    return count;
+}
+
 int main(int argc, char *argv[]) {
 	if (argc < 2) {
 		write_str(STDERR_FILENO, "Uso: ./runner -e <user> <cmd> [args...] | -c | -s\n");
@@ -136,7 +149,10 @@ int main(int argc, char *argv[]) {
 		build_cmd_string(argc, argv, 3, msg.cmd, sizeof(msg.cmd));
 		gettimeofday(&msg.submit_time, NULL);
 
-		write_str(STDOUT_FILENO, "Comando submetido\n");
+		char line[128];
+		int len = snprintf(line, sizeof(line), "[runner] command %d submitted\n", msg.cmd_id);
+		write(STDOUT_FILENO, line, len);
+
 		if (send_message(&msg) < 0) {
 			write_str(STDERR_FILENO, "Erro ao contactar controller\n");
 			close(runner_fd);
@@ -152,13 +168,25 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 
-		write_str(STDOUT_FILENO, "Comando em execucao\n");
+		len = snprintf(line, sizeof(line), "[runner] executing command %d...\n", msg.cmd_id);
+		write(STDOUT_FILENO, line, len);
 
 		pid_t child = fork();
 		if (child == 0) {
-			execvp(argv[3], &argv[3]);
-			_exit(127);
-		}
+    		char cmd_copy[MAX_CMD_LEN];
+    		strncpy(cmd_copy, msg.cmd, MAX_CMD_LEN - 1);
+    		cmd_copy[MAX_CMD_LEN - 1] = '\0';
+
+    		char *args[MAX_ARGS];
+    		parse_command(cmd_copy, args, MAX_ARGS);
+
+    		if (args[0] == NULL) {
+        		_exit(1);  
+    		}
+
+    		execvp(args[0], args);
+    		_exit(127);    
+}
 
 		if (child < 0) {
 			write_str(STDERR_FILENO, "Erro ao executar comando\n");
@@ -181,7 +209,8 @@ int main(int argc, char *argv[]) {
 		done.submit_time = msg.submit_time;
 		send_message(&done);
 
-		write_str(STDOUT_FILENO, "Comando terminado\n");
+		len = snprintf(line, sizeof(line), "[runner] command %d finished\n", msg.cmd_id);
+		write(STDOUT_FILENO, line, len);
 
 		close(runner_fd);
 		unlink(runner_pipe);
@@ -204,12 +233,20 @@ int main(int argc, char *argv[]) {
 		strncpy(msg.user_id, "admin", MAX_USER_LEN - 1);
 		gettimeofday(&msg.submit_time, NULL);
 
+		 if (msg.type == MSG_SHUTDOWN) {
+        	write_str(STDOUT_FILENO, "[runner] sent shutdown notification\n");
+   		}
+
 		if (send_message(&msg) < 0) {
 			write_str(STDERR_FILENO, "Erro ao contactar controller\n");
 			close(runner_fd);
 			unlink(runner_pipe);
 			return 1;
 		}
+
+		if (msg.type == MSG_SHUTDOWN) {
+        	write_str(STDOUT_FILENO, "[runner] waiting for controller to shutdown...\n");
+    	}
 
 		Response resp;
 		if (read_all(runner_fd, &resp, sizeof(resp)) != (ssize_t)sizeof(resp)) {
