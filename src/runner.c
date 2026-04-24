@@ -87,9 +87,11 @@ static int send_message(const Message *msg) {
 }
 
 static int generate_cmd_id(void) {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return (int)(((tv.tv_sec & 0xFFFF) << 16) ^ (tv.tv_usec & 0xFFFF) ^ (getpid() & 0x7FFF));
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    int id = (int)(((tv.tv_sec & 0xFFFF) << 16) ^ (tv.tv_usec & 0xFFFF) ^ (getpid() & 0x7FFF));
+    if (id < 0) id = -id;   /* garantir que é positivo */
+    return id;
 }
 
 static void build_cmd_string(int argc, char *argv[], int from, char *dst, size_t dst_size) {
