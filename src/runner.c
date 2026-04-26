@@ -121,6 +121,48 @@ static int parse_command(char *cmd, char *args[], int max_args) {
     return count;
 }
 
+/* Processa redirects no array args. Remove os operadores e ficheiros
+ * do array, e aplica o dup2 para redirecionar stdin/stdout/stderr.
+ * Devolve 0 em sucesso, -1 em erro. */
+
+static int apply_redirects(char *args[]) {
+    int i = 0;
+    int j = 0;  
+
+    while (args[i] != NULL) {
+        if (strcmp(args[i], ">") == 0 && args[i + 1] != NULL) {
+            /* redirect de stdout */
+            int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) return -1;
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+            i += 2;   /* saltar ">" e o ficheiro */
+        }
+        else if (strcmp(args[i], "<") == 0 && args[i + 1] != NULL) {
+            /* redirect de stdin */
+            int fd = open(args[i + 1], O_RDONLY);
+            if (fd < 0) return -1;
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+            i += 2;
+        }
+        else if (strcmp(args[i], "2>") == 0 && args[i + 1] != NULL) {
+            /* redirect de stderr */
+            int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) return -1;
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+            i += 2;
+        }
+        else {
+            /* argumento normal - mantém no array */
+            args[j++] = args[i++];
+        }
+    }
+    args[j] = NULL;   /* terminar o array no novo tamanho */
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
 	if (argc < 2) {
 		write_str(STDERR_FILENO, "Uso: ./runner -e <user> <cmd> [args...] | -c | -s\n");
@@ -186,6 +228,10 @@ int main(int argc, char *argv[]) {
         		_exit(1);  
     		}
 
+			if (apply_redirects(args) < 0) {
+				_exit(1);  
+			}
+			
     		execvp(args[0], args);
     		_exit(127);    
 }
