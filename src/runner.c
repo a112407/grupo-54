@@ -320,7 +320,7 @@ int main(int argc, char *argv[]) {
 		if (msg.type == MSG_QUERY && resp.type == RESP_QUERY) {
 			write_str(STDOUT_FILENO, resp.body);
 		} else if (msg.type == MSG_SHUTDOWN && resp.type == RESP_SHUTDOWN_ACK) {
-			write_str(STDOUT_FILENO, "Controller notificado para terminar\n");
+			write_str(STDOUT_FILENO, "[runner] controller exited\n");
 		} else {
 			write_str(STDERR_FILENO, "Resposta inesperada do controller\n");
 			close(runner_fd);
