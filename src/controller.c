@@ -35,6 +35,7 @@ static void write_str(int fd, const char *s) {
     write(fd, s, strlen(s));
 }
 
+//serve para escrever tudo
 static ssize_t write_all(int fd, const void *buf, size_t len) {
     size_t total = 0;
     const char *ptr = (const char *)buf;
@@ -53,6 +54,7 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
     return (ssize_t)total;
 }
 
+//serve para ler tudo 
 static ssize_t read_all(int fd, void *buf, size_t len) {
     size_t total = 0;
     char *ptr = (char *)buf;
@@ -79,13 +81,15 @@ static ssize_t read_all(int fd, void *buf, size_t len) {
     return (ssize_t)total;
 }
 
+//Função com valores muito estranhos fazem sentido, mas n sei se serão os mais corretos
+// Envia uma resposta para o FIFO privado de um Runner específico. Utiliza tentativas (retries) e modo não-bloqueante para garantir que o Controller não fique "preso" se o Runner demorar a abrir o seu canal.
 static int send_response(pid_t runner_pid, const Response *resp) {
     char path[128];
     snprintf(path, sizeof(path), RUNNER_PIPE_FMT, (int)runner_pid);
 
     int fd = -1;
     int retries = 50;
-    while (retries-- > 0) {
+    while (retries-- > 0) {//Às vezes, o Controller é tão rápido a responder que tenta abrir o FIFO do Runner antes mesmo de o Runner ter acabado de o criar ou de o abrir para leitura.
         fd = open(path, O_WRONLY | O_NONBLOCK);
         if (fd >= 0) {
             break;
@@ -93,7 +97,7 @@ static int send_response(pid_t runner_pid, const Response *resp) {
         if (errno != ENXIO && errno != ENOENT) {
             break;
         }
-        usleep(20000);
+        usleep(20000);//O_NONBLOCK: Isto impede que o Controller fique "pendurado" se o Runner demorar a abrir o pipe. Se o pipe não estiver pronto, o open falha imediatamente com um erro (ENXIO), e o Controller simplesmente espera um bocadinho (usleep(20000) — 20 milisegundos) e tenta outra vez.
     }
 
     if (fd < 0) {
@@ -109,6 +113,7 @@ static int send_response(pid_t runner_pid, const Response *resp) {
     return 0;
 }
 
+// Regista no ficheiro de log o término de um comando, calculando o tempo total de execução e guardando os dados do utilizador e do comando.
 static void append_log(const CmdEntry *entry, const struct timeval *end_time) {
     int fd = open(LOG_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) {
@@ -140,6 +145,7 @@ static void append_log(const CmdEntry *entry, const struct timeval *end_time) {
     close(fd);
 }
 
+// Remove o comando da memória RAM (queue) no índice indicado, deslocando os comandos seguintes uma posição à frente para manter a fila contígua e sem buracos e evitar que a queue fique cheia.
 static int remove_index(int index) {
     if (index < 0 || index >= queue_size) {
         return -1;
@@ -152,6 +158,7 @@ static int remove_index(int index) {
     return 0;
 }
 
+//Politicas de escalonamento
 static void try_dispatch(void) {
     while (running < max_parallel) {
         int chosen = -1;
@@ -201,6 +208,7 @@ static void try_dispatch(void) {
     }
 }
 
+//ver melhor parece um bocado confusa
 static void handle_submit(const Message *msg) {
     if (queue_size >= MAX_QUEUE) {
         return;
@@ -218,11 +226,12 @@ static void handle_submit(const Message *msg) {
     queue_size++;
 }
 
+// Processa a conclusão de um comando: atualiza o contador de processos ativos, regista os dados no log histórico e remove o comando da fila de memória.
 static void handle_done(const Message *msg) {
     for (int i = 0; i < queue_size; ++i) {
         if (queue[i].cmd_id == msg->cmd_id && queue[i].runner_pid == msg->runner_pid) {
             if (queue[i].state == STATE_RUNNING && running > 0) {
-                running--;
+                running--;//liberta a sua vaga
             }
 
             struct timeval end_time;
@@ -234,6 +243,7 @@ static void handle_done(const Message *msg) {
     }
 }
 
+// Constrói uma resposta textual listando todos os comandos em execução e em espera, enviando-a ao Runner que solicitou o estado do sistema, serve para os coamndos -c e -s.
 static void handle_query(pid_t runner_pid) {
     Response resp;
     memset(&resp, 0, sizeof(resp));
@@ -273,6 +283,7 @@ static void handle_query(pid_t runner_pid) {
     send_response(runner_pid, &resp);
 }
 
+// Inicia o processo de encerramento do sistema, ativando a flag de shutdown e guardando o PID do solicitante para enviar a confirmação assim que todos os comandos ativos terminarem.
 static void handle_shutdown(const Message *msg) {
     shutdown_requested = 1;
     shutdown_runner_pid = msg->runner_pid;

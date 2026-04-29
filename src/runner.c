@@ -13,6 +13,7 @@ static void write_str(int fd, const char *s) {
 	write(fd, s, strlen(s));
 }
 
+// Garante a escrita total dos dados, tratando escritas parciais e interrupções por sinais (EINTR).
 static ssize_t write_all(int fd, const void *buf, size_t len) {
 	size_t total = 0;
 	const char *ptr = (const char *)buf;
@@ -31,6 +32,8 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
 	return (ssize_t)total;
 }
 
+
+// Garante a leitura total de 'len' bytes, tratando leituras parciais e interrupções por sinais. 
 static ssize_t read_all(int fd, void *buf, size_t len) {
 	size_t total = 0;
 	char *ptr = (char *)buf;
@@ -57,6 +60,12 @@ static ssize_t read_all(int fd, void *buf, size_t len) {
 	return (ssize_t)total;
 }
 
+/**
+  Prepara o canal de comunicação privado do Runner:
+  1. Gera um nome único baseado no PID do processo.
+  2. Remove restos de execuções anteriores (unlink).
+  3. Cria um novo FIFO e abre-o (O_RDWR para evitar bloqueios).
+ */
 static int open_runner_pipe(char *path, size_t path_len) {
 	pid_t pid = getpid();
 	snprintf(path, path_len, RUNNER_PIPE_FMT, (int)pid);
@@ -75,6 +84,7 @@ static int open_runner_pipe(char *path, size_t path_len) {
 	return fd;
 }
 
+// Abre o FIFO do Controller e envia uma mensagem a dizer que já está pronto.
 static int send_message(const Message *msg) {
 	int fd = open(CONTROLLER_PIPE, O_WRONLY);
 	if (fd < 0) {
@@ -86,6 +96,7 @@ static int send_message(const Message *msg) {
 	return ok ? 0 : -1;
 }
 
+// Gera um identificador único para o comando, combinando o tempo atual (segundos e microssegundos) com o PID do processo para evitar duplicados.
 static int generate_cmd_id(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -94,6 +105,7 @@ static int generate_cmd_id(void) {
     return id;
 }
 
+// Concatena os argumentos do programa (argv) numa única string, separando-os por espaços, para ser enviada ao Controller.
 static void build_cmd_string(int argc, char *argv[], int from, char *dst, size_t dst_size) {
 	size_t used = 0;
 	dst[0] = '\0';
@@ -108,7 +120,8 @@ static void build_cmd_string(int argc, char *argv[], int from, char *dst, size_t
 	}
 }
 
-/* separa a string cmd em argumentos, preenche args[] e devolve quantos */
+// separa a string cmd em argumentos, preenche args[] e devolve 
+//Possivelmente dá para melhorar
 static int parse_command(char *cmd, char *args[], int max_args) {
     int count = 0;
     char *token = strtok(cmd, " \t");
