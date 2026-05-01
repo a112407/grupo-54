@@ -230,23 +230,101 @@ int main(int argc, char *argv[]) {
 
 		pid_t child = fork();
 		if (child == 0) {
-    		char cmd_copy[MAX_CMD_LEN];
-    		strncpy(cmd_copy, msg.cmd, MAX_CMD_LEN - 1);
-    		cmd_copy[MAX_CMD_LEN - 1] = '\0';
+			char cmd_copy[MAX_CMD_LEN];
+			strncpy(cmd_copy, msg.cmd, MAX_CMD_LEN - 1);
+			cmd_copy[MAX_CMD_LEN - 1] = '\0';
 
-    		char *args[MAX_ARGS];
-    		parse_command(cmd_copy, args, MAX_ARGS);
+			char *args[MAX_ARGS];
+			parse_command(cmd_copy, args, MAX_ARGS);
 
-    		if (args[0] == NULL) {
-        		_exit(1);  
-    		}
+			if (args[0] == NULL) _exit(1);
 
-			if (apply_redirects(args) < 0) {
-				_exit(1);  
+			/* Contar tokens e localizar pipes (|) */
+			int token_count = 0;
+			while (args[token_count] != NULL && token_count < MAX_ARGS) token_count++;
+			int pipe_idx[MAX_ARGS];
+			int npipes = 0;
+			for (int i = 0; i < token_count; ++i) {
+				if (strcmp(args[i], "|") == 0) {
+					pipe_idx[npipes++] = i;
+				}
 			}
-			
-    		execvp(args[0], args);
-    		_exit(127);    
+
+			/* Sem pipes: aplicar redirects e executar normalmente */
+			if (npipes == 0) {
+				if (apply_redirects(args) < 0) _exit(1);
+				execvp(args[0], args);
+				_exit(127);
+			}
+
+			/* Preparar segmentos: substituir '|' por NULL e construir ponteiros */
+			int nseg = npipes + 1;
+			char **seg_ptrs[nseg];
+			seg_ptrs[0] = args;
+			for (int k = 0; k < npipes; ++k) {
+				int idx = pipe_idx[k];
+				args[idx] = NULL; /* termina segmento k */
+				seg_ptrs[k+1] = &args[idx + 1];
+			}
+
+			/* Criar pipes (npipes) */
+			int fds[npipes][2];
+			for (int k = 0; k < npipes; ++k) {
+				if (pipe(fds[k]) < 0) _exit(1);
+			}
+
+			/* Fork para cada segmento */
+			pid_t children[nseg];
+			for (int s = 0; s < nseg; ++s) {
+				pid_t c = fork();
+				if (c < 0) {
+					/* falha no fork: termina todos e sai */
+					for (int kk = 0; kk < s; ++kk) waitpid(children[kk], NULL, 0);
+					_exit(1);
+				}
+				if (c == 0) {
+					/* Filho do segmento s */
+					/* Ligar stdin/stdout aos pipes apropriados */
+					if (s > 0) {
+						/* ler do pipe anterior */
+						if (dup2(fds[s-1][0], STDIN_FILENO) < 0) _exit(1);
+					}
+					if (s < nseg - 1) {
+						/* escrever para o pipe seguinte */
+						if (dup2(fds[s][1], STDOUT_FILENO) < 0) _exit(1);
+					}
+
+					/* fechar todas os descritores dos pipes (pai/filho) */
+					for (int kk = 0; kk < npipes; ++kk) {
+						close(fds[kk][0]);
+						close(fds[kk][1]);
+					}
+
+					/* aplicar redirects só no segmento atual */
+					if (apply_redirects(seg_ptrs[s]) < 0) _exit(1);
+					if (seg_ptrs[s][0] == NULL) _exit(1);
+					execvp(seg_ptrs[s][0], seg_ptrs[s]);
+					_exit(127);
+				}
+				/* pai guarda pid */
+				children[s] = c;
+			}
+
+			/* Pai fecha todos os descritores dos pipes */
+			for (int k = 0; k < npipes; ++k) {
+				close(fds[k][0]);
+				close(fds[k][1]);
+			}
+
+			/* Espera pelos filhos do pipeline */
+			for (int s = 0; s < nseg; ++s) {
+				int st;
+				while (waitpid(children[s], &st, 0) < 0) {
+					if (errno != EINTR) break;
+				}
+			}
+
+			_exit(0);
 }
 
 		if (child < 0) {
