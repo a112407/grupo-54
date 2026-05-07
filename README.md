@@ -23,9 +23,22 @@ O `controller` guarda os comandos em espera, liberta execuções até ao limite 
 
 ## Estrutura
 
-- `src/controller.c` - lógica do controlador, fila, escalonamento e logs
-- `src/runner.c` - interface de cliente e execução dos comandos
+**Módulos principais:**
+- `src/controller.c` - escalonador, despacho de comandos e políticas de agendamento
+- `src/runner.c` - interface de cliente, comunicação com controller
+
+**Módulos de suporte:**
+- `src/util.c` - funções comuns de I/O (`write_str`, `write_all`, `read_all`)
+- `src/queue.c` - gerenciamento de fila de comandos, logging e manipulação de estados
+- `src/executor.c` - parsing de comandos, redirecionamentos (>, <, 2>) e execução com pipes
+
+**Headers:**
 - `include/common.h` - estruturas e constantes partilhadas
+- `include/util.h` - declarações de funções de I/O
+- `include/queue.h` - estruturas de fila e funções de gerenciamento
+- `include/executor.h` - funções de parsing e execução
+
+**Outros:**
 - `scripts/` - scripts de teste e validação
 - `tmp/` - FIFOs temporários e ficheiro de histórico
 
@@ -37,11 +50,51 @@ make
 
 Isto gera os executáveis em `bin/controller` e `bin/runner`.
 
+O compilador produz os seguintes ficheiros objeto:
+- `obj/util.o` - usado por controller e runner
+- `obj/queue.o` - usado por controller
+- `obj/executor.o` - usado por runner
+- `obj/controller.o` - lógica específica do controller
+- `obj/runner.o` - lógica específica do runner
+
 Para limpar artefactos de compilação e ficheiros temporários:
 
 ```bash
 make clean
 ```
+
+## Arquitetura de Módulos
+
+```
+┌─────────────────────────────────────────┐
+│         common.h (protocolo)            │
+│  (Message, Response, constantes)        │
+└─────────────────────────────────────────┘
+              ▲                 ▲
+              │                 │
+       ┌──────┘                 └──────┐
+       │                               │
+┌──────▼──────────────────┐  ┌────────▼────────────┐
+│    CONTROLLER           │  │      RUNNER         │
+│                         │  │                     │
+│  ├─ util.c (I/O)        │  │  ├─ util.c (I/O)    │
+│  ├─ queue.c (fila)      │  │  └─ executor.c      │
+│  └─ controller.c        │  │     (exec+pipes)    │
+│     (despacho)          │  │                     │
+│                         │  │  └─ runner.c        │
+└─────────────────────────┘  │     (cliente)       │
+                             └─────────────────────┘
+```
+
+**Responsabilidades:**
+
+| Módulo | Responsabilidade |
+|--------|------------------|
+| **util** | Operações de I/O robustas (tratamento de EINTR e escritas parciais) |
+| **queue** | Gerenciamento de fila, logging de execuções, transições de estado |
+| **executor** | Parsing de comandos, aplicação de redirects, execução com pipes |
+| **controller** | Escalonamento, políticas de agendamento (FIFO/Round-Robin), comunicação |
+| **runner** | Interface com utilizador, submissão de comandos, queries ao controller |
 
 ## Execução
 
@@ -120,3 +173,27 @@ Exemplo de execução:
 - O projeto foi pensado para ambiente Linux.
 - As mensagens entre processos usam estruturas em memória, por isso os executáveis devem ser compilados no mesmo ambiente.
 - Se o `controller` terminar de forma anormal, pode ser útil limpar `tmp/` antes de voltar a correr o sistema.
+
+## Extensibilidade
+
+Os módulos foram projetados para serem reutilizáveis:
+
+**util.c** - Pode ser usado por qualquer programa que necessite I/O robusto:
+```c
+#include "util.h"
+write_str(STDOUT_FILENO, "Mensagem\n");
+ssize_t n = read_all(fd, buf, sizeof(buf));
+```
+
+**executor.c** - Pode ser usado para executar comandos com pipes e redirects:
+```c
+#include "executor.h"
+execute_command("cat file.txt | grep teste > output.txt");
+```
+
+**queue.c** - Pode ser usado em outros escalonadores ou sistemas de fila:
+```c
+#include "queue.h"
+queue_add_command(&msg);
+queue_mark_done(&msg);
+```
